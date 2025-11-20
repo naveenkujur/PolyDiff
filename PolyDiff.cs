@@ -1,8 +1,4 @@
-
 using Nori;
-
-/*
- */
 
 /// <summary>Overlapping ranges along Poly A and B</summary>
 /// <param name="StartLieA">Range start along Poly A</param>
@@ -20,6 +16,8 @@ readonly struct ORange {
    public readonly double EndLieB;
 
    public override string ToString () => $"[({StartLieA},{EndLieA})({StartLieB},{EndLieB})]";
+   public ORange Rebased (int segAIdx, int segBIdx)
+      => new (segAIdx + StartLieA, segAIdx + EndLieA, segBIdx + StartLieB, segBIdx + EndLieB);
 }
 
 static class Q {
@@ -35,7 +33,7 @@ static class Q {
             if (segA.IsLine) {
                var range = CollinearOverlap (segA, segB);
                if (range == null) continue;
-               overlaps.Add (range.Value);
+               overlaps.Add (range.Value.Rebased (segA.N, segB.N));
             } 
          }
       }
@@ -59,15 +57,25 @@ static class Q {
    public static ORange? ConcentricOverlap (Seg segA, Seg segB) {
       if (segA.IsCircle || segB.IsCircle) throw new NotSupportedException ("No circles, for now");
       if (!segA.IsArc || !segB.IsArc) throw new InvalidOperationException ();
+      if (!segA.Center.EQ (segB.Center) || !segA.Radius.EQ (segB.Radius)) return null;
       if (segA.IsCCW != segB.IsCCW) throw new NotSupportedException ("Same winding only, for now");
+
       var (sLie, eLie) = (segA.GetLie (segB.A), segA.GetLie (segB.B)); // Lie of segB, in terms of segA
+      
       // Note: Arc external lies are tricky!
-      // So we check if any of the projected lies are in 0..1 range!
+      // So we simply check if any of the projected lies are in 0..1 range!
       bool overlap = InRange (sLie) || InRange (eLie);
       if (!overlap) return null;
-      // Got overlap!
+
+      // Clamp the projected lies to 0..1 range, very carefully!
+      if (!InRange (sLie)) sLie = 0;
+      if (!InRange (eLie)) eLie = 1;
+
       var (sLie2, eLie2) = (segB.GetLie (segA.A), segB.GetLie (segA.B)); // Lie of segA, in terms of segB
-      // Note (AGAIN): Arc external lies are tricky!
+      // Clamp the projected lies to 0..1 range, very carefully!
+      if (!InRange (sLie2)) sLie2 = 0;
+      if (!InRange (eLie2)) eLie2 = 1;
+
       return new ORange (sLie, eLie, sLie2, eLie2);
 
       static bool InRange (double lie) => lie > Lib.Epsilon && lie < 1 - Lib.Epsilon;
@@ -80,6 +88,10 @@ static class Q {
    // Single line segment modified
    public static void TestLineSeg () {
       Poly a = Poly.Parse ("M0,0 H100");
+      {
+         Poly b = a; // Full overlap!
+         Validate (a, b, [new (0, 1, 0, 1)]);
+      }
       {
          Poly b = Poly.Parse ("M0,0 H200"); // Elongated line
          Validate (a, b, [new (0, 1, 0, 0.5)]);
