@@ -5,8 +5,8 @@ using Nori;
 /// <param name="EndLieA">Range end along Poly A</param>
 /// <param name="StartLieB">Range start along Poly B</param>
 /// <param name="EndLieB">Range start along Poly B</param>
-readonly struct ORange {
-   public ORange (double startLieA, double endLieA, double startLieB, double endLieB)
+readonly struct OverlapSpan {
+   public OverlapSpan (double startLieA, double endLieA, double startLieB, double endLieB)
       => (StartLieA, EndLieA, StartLieB, EndLieB)
       = (startLieA.Clamp (), endLieA.Clamp (), startLieB.Clamp (), endLieB.Clamp ());
 
@@ -16,52 +16,54 @@ readonly struct ORange {
    public readonly double EndLieB;
 
    public override string ToString () => $"[({StartLieA},{EndLieA})({StartLieB},{EndLieB})]";
-   public ORange Rebased (int segAIdx, int segBIdx)
+   public OverlapSpan Rebased (int segAIdx, int segBIdx)
       => new (segAIdx + StartLieA, segAIdx + EndLieA, segBIdx + StartLieB, segBIdx + EndLieB);
 }
 
+class UncoveredSpan {
+
+}
+
 static class Q {
-   public static IList<ORange> PolyDiff (Poly a, Poly b) {
+   public static IList<OverlapSpan> PolyDiff (Poly a, Poly b) {
       if (!a.IsOpen || !b.IsOpen) throw new NotSupportedException ("Open polys only, for now");
-      List<ORange> overlaps = [];
+      List<OverlapSpan> overlaps = [];
       for (int i = 0; i < a.Count; i++) {
          var segA = a[i];
          for (int j = 0; j < b.Count; j++) {
             var segB = b[j];
             if (segA.IsLine != segB.IsLine) { continue; }
             // Either both are lines, or both are arcs
-            if (segA.IsLine) {
-               var range = CollinearOverlap (segA, segB);
-               if (range == null) continue;
-               overlaps.Add (range.Value.Rebased (segA.N, segB.N));
-            } 
+            var range = segA.IsLine ? CollinearOverlap (segA, segB) : ConcentricOverlap (segA, segB);
+            if (range == null) continue;
+            overlaps.Add (range.Value.Rebased (segA.N, segB.N));
          }
       }
       return overlaps;
    }
 
    /// <summary>Collinear overlap range computation</summary>
-   public static ORange? CollinearOverlap (Seg segA, Seg segB) {
+   public static OverlapSpan? CollinearOverlap (Seg segA, Seg segB) {
       if (!segA.IsLine || !segB.IsLine) throw new InvalidOperationException ();
-      if (segA.A.Side (segB.A, segB.B) != 0 || segA.B.Side (segB.A, segB.B) != 0) return null; 
+      if (segA.A.Side (segB.A, segB.B) != 0 || segA.B.Side (segB.A, segB.B) != 0) return null;
       if (!segA.Slope.EQ (segB.Slope)) throw new NotSupportedException ("Same direction only, for now");
       // Check for overlap
       var (sLie, eLie) = (segA.GetLie (segB.A), segA.GetLie (segB.B)); // Lie of segB, in terms of segA
       if (sLie > 1 - Lib.Epsilon || eLie < Lib.Epsilon) return null;
       // Got overlap!
       var (sLie2, eLie2) = (segB.GetLie (segA.A), segB.GetLie (segA.B)); // Lie of segA, in terms of segB
-      return new ORange (sLie, eLie, sLie2, eLie2);
+      return new OverlapSpan (sLie, eLie, sLie2, eLie2);
    }
 
    /// <summary>Concentric overlap range computation</summary>
-   public static ORange? ConcentricOverlap (Seg segA, Seg segB) {
+   public static OverlapSpan? ConcentricOverlap (Seg segA, Seg segB) {
       if (segA.IsCircle || segB.IsCircle) throw new NotSupportedException ("No circles, for now");
       if (!segA.IsArc || !segB.IsArc) throw new InvalidOperationException ();
       if (!segA.Center.EQ (segB.Center) || !segA.Radius.EQ (segB.Radius)) return null;
       if (segA.IsCCW != segB.IsCCW) throw new NotSupportedException ("Same winding only, for now");
 
       var (sLie, eLie) = (segA.GetLie (segB.A), segA.GetLie (segB.B)); // Lie of segB, in terms of segA
-      
+
       // Note: Arc external lies are tricky!
       // So we simply check if any of the projected lies are in 0..1 range!
       bool overlap = InRange (sLie) || InRange (eLie);
@@ -76,7 +78,7 @@ static class Q {
       if (!InRange (sLie2)) sLie2 = 0;
       if (!InRange (eLie2)) eLie2 = 1;
 
-      return new ORange (sLie, eLie, sLie2, eLie2);
+      return new OverlapSpan (sLie, eLie, sLie2, eLie2);
 
       static bool InRange (double lie) => lie > Lib.Epsilon && lie < 1 - Lib.Epsilon;
    }
@@ -102,21 +104,21 @@ static class Q {
       }
       {
          Poly b = Poly.Parse ("M-10,0H90"); // Shifted backward
-         Validate (a, b, [new (0,0.9,0.1,1)]);
+         Validate (a, b, [new (0, 0.9, 0.1, 1)]);
       }
       {
          Poly b = Poly.Parse ("M10,0H90"); // Fully contained
-         Validate (a, b, [new (0.1,0.9,0,1)]);
+         Validate (a, b, [new (0.1, 0.9, 0, 1)]);
       }
       {
          Poly a2 = Poly.Parse ("M10,0H90");
          Poly b = Poly.Parse ("M0,0H100"); // Fully contains other
-         Validate (a2, b, [new (0,1,0.1,0.9)]);
+         Validate (a2, b, [new (0, 1, 0.1, 0.9)]);
       }
    }
 
    // Performs regression testing
-   public static void Validate (Poly a, Poly b, IList<ORange>? refRanges = null) {
+   public static void Validate (Poly a, Poly b, IList<OverlapSpan>? refRanges = null) {
       var ranges = PolyDiff (a, b);
       if (refRanges == null) {
          foreach (var range in ranges)
@@ -130,7 +132,7 @@ static class Q {
             return;
          }
       }
-      foreach(var range in ranges) 
+      foreach (var range in ranges)
          Console.Write (range);
       Console.WriteLine ($"Pass");
    }
