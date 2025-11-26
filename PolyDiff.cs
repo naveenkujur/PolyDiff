@@ -13,7 +13,7 @@ using Nori;
 readonly struct PairedSpan { // Persistent data | But could be initialized using SegSlice/s
    public PairedSpan (Seg segA, double startLieA, double endLieA, Seg segB, double startLieB, double endLieB)
       => (SegA, StartLieA, EndLieA, SegB, StartLieB, EndLieB)
-      = (segA, (float)startLieA, (float)endLieA, segB, (float)startLieB, (float)endLieB);
+      = (segA, (float)startLieA.Clamp (), (float)endLieA.Clamp (), segB, (float)startLieB.Clamp (), (float)endLieB.Clamp ());
 
    readonly Seg SegA, SegB;
    public readonly float StartLieA, EndLieA;
@@ -103,42 +103,30 @@ readonly ref struct SegSlice {
       => mSeg.Poly == o.mSeg.Poly && mSeg.N == o.mSeg.N && mStartLie.EQ (o.mStartLie); // No need to match endLie!
 
    public PairedSpan? ComputeOverlap (SegSlice o) {
+      if (mSeg.IsCircle || o.mSeg.IsCircle) throw new NotSupportedException ("Not yet supported");
       if (!IsAlignedWith (o)) return null;
-      var (sa, sb) = (mSeg, o.mSeg);
+      var (segA, segB) = (mSeg, o.mSeg);
       if (mSeg.IsLine) {
-         var (sLie, eLie) = (sa.GetLie (sb.A), sa.GetLie (sb.B)); // Lie of segB, in terms of segA
+         var (sLie, eLie) = (segA.GetLie (segB.A), segA.GetLie (segB.B)); // Lie of segB, in terms of segA
          if (sLie > (1 - Lib.Epsilon) || eLie < Lib.Epsilon) return null;
          // Got overlap!
-         var (sLie2, eLie2) = (sb.GetLie (sa.A), sb.GetLie (sa.B)); // Lie of segA, in terms of segB
-         return new PairedSpan (sa, sLie, eLie, sb, sLie2, eLie2);
+         var (sLie2, eLie2) = (segB.GetLie (segA.A), segB.GetLie (segA.B)); // Lie of segA, in terms of segB
+         return new PairedSpan (segA, sLie, eLie, segB, sLie2, eLie2);
       }
-      {
-         // Note: Arc external lies are tricky!
-         // That is, if the lie is within [0..1] we're good. Otherwise, we are in a very deep soup!
-
-         var (sLie, eLie) = (sa.GetLie (sb.A), sa.GetLie (sb.B)); // Lie of segB, in terms of segA
-         if (sLie > (1 - Lib.Epsilon) || eLie < Lib.Epsilon) return null;
-
-         // Clamp the projected lies to 0..1 range, very carefully!
-         if (!InRange (sLie)) sLie = 0;
-         if (!InRange (eLie)) eLie = 1;
-
-
-         var (sLie2, eLie2) = (sb.GetLie (sa.A), sb.GetLie (sa.B)); // Lie of segA, in terms of segB
-         // Clamp the projected lies to 0..1 range, very carefully!
-         if (!InRange (sLie2)) sLie2 = 0;
-         if (!InRange (eLie2)) eLie2 = 1;
-
-         return new PairedSpan (sa, sLie, eLie, sb, sLie2, eLie2);
-
-         static bool InRange (double lie) => lie > Lib.Epsilon && lie < 1 - Lib.Epsilon;
-      }
+      // Arc overlap case.
+      // Span angle range interval (-TwoPI, TwoPI)
+      // Span value interval [0, TwoPI)
+      var (sa, ea) = segA.GetStartAndEndAngles ();
+      var (sb, eb) = segB.GetStartAndEndAngles ();
+      if (sa > eb || ea < sb) return null;
+      var (spanA, spanB) = (ea - sa, eb - sb);
+      var (os, oe) = (Math.Max (sa, sb), Math.Min (ea, eb));
+      return new PairedSpan (segA, (os - sa) / spanA, (oe - sa) / spanA, segB, (os - sb) / spanB, (oe - sb) / spanB);
    }
-
 
    // Implementation
    bool IsAlignedWith (SegSlice o) { // Alignment check: Common line def | common circle def
-      if (mSeg.IsLine ^ o.mSeg.IsArc) return false;
+      if (mSeg.IsLine ^ o.mSeg.IsLine) return false;
       var (sa, sb) = (mSeg, o.mSeg);
       if (mSeg.IsLine) {
          if (sa.A.Side (sb.A, sb.B) != 0 || sa.B.Side (sb.A, sb.B) != 0) return false;
@@ -162,6 +150,8 @@ static class Q {
       {
          Poly b = a; // Full overlap!
          Validate (a, b, [new (a[0], 0, 1, b[0], 0, 1)]);
+
+         Validate (b, a, [new (b[0], 0, 1, a[0], 0, 1)]);
       }
       {
          Poly b = Poly.Parse ("M0,0 H200"); // Elongated line
@@ -190,6 +180,10 @@ static class Q {
    public static void Validate (Poly a, Poly b, IList<PairedSpan>? refRanges = null) {
       var cvrg = Coverage.Compute (a, b);
       var ranges = cvrg!.Overlaps;
+      if (ranges is null || ranges.Count == 0) {
+         Console.WriteLine ("Fail: No overlaps found");
+         return;
+      }
       if (refRanges == null) {
          foreach (var range in ranges)
             Console.WriteLine (range.ToString ());
