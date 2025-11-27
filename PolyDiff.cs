@@ -10,7 +10,7 @@ using Nori;
 ///   the persistent (overlapping) span pair
 ///   and the substitution (replacement) span pair
 /// </remarks>
-readonly struct PairedSpan { // Persistent data | But could be initialized using SegSlice/s
+readonly struct PairedSpan {
    public PairedSpan (Seg segA, double startLieA, double endLieA, Seg segB, double startLieB, double endLieB)
       => (SegA, StartLieA, EndLieA, SegB, StartLieB, EndLieB)
       = (segA, (float)startLieA.Clamp (), (float)endLieA.Clamp (), segB, (float)startLieB.Clamp (), (float)endLieB.Clamp ());
@@ -25,8 +25,7 @@ readonly struct PairedSpan { // Persistent data | But could be initialized using
    public override string ToString () => $"[({StartLieA},{EndLieA})({StartLieB},{EndLieB})]";
 }
 
-class Coverage {
-   Coverage (Poly a, Poly b) { }
+static class Coverage {
    // Coverage == List of overlapping spans
    //    This is sufficient for overlap cleanup operation
    // Difference b/w two polys == PolyB - PolyA
@@ -34,13 +33,12 @@ class Coverage {
    //       How to go from PolyA to Polyb
    //          Which spans persist and get carried over, and which spans undergo span substitution!
    //    There may be overlapping spans which remain - coverage - persistent spans
-   //    There are spans in PolyA which fade in - outgoing spans
-   //    There are spans in PolyB which fade out - incoming spans
-   public static Coverage? Compute (Poly polyA, Poly polyB) {
-      if ((polyA.GetBound ().InflatedL (Lib.Epsilon) * polyB.GetBound ()).IsEmpty) return null;
+   //    There are spans in PolyA which get replaced by spans in PolyB
+   public static IReadOnlyList<PairedSpan> Compute (Poly polyA, Poly polyB) {
+      if ((polyA.GetBound ().InflatedL (Lib.Epsilon) * polyB.GetBound ()).IsEmpty) return [];
+      List<PairedSpan> overlaps = [];
 
       // NOTE: All Polys are essentially treated like open polys in this case of overlap detection and ranging.
-      var cvrg = new Coverage (polyA, polyB);
       SegSlice sa = new (polyA[0]), sb = new (polyB[0]);
       PairedSpan? overlap0 = null; // Hold the first overlap; This will help determine the STOP condition.
       while (true) {
@@ -51,7 +49,7 @@ class Coverage {
          var overlap = sa.ComputeOverlap (sb);
          if (overlap is { } o) {
             if (overlap0 is null) overlap0 = o; // Register the first overlap
-            cvrg.mOverlaps.Add (o);
+            overlaps.Add (o);
             // Get the slices from overlap!
             sa = o.SegSliceA;
             sb = o.SegSliceB;
@@ -75,12 +73,8 @@ class Coverage {
             sa = sa.First (); // Reset
          }
       }
-      return cvrg;
+      return overlaps;
    }
-
-   public IReadOnlyList<PairedSpan> Overlaps => mOverlaps;
-
-   readonly List<PairedSpan> mOverlaps = [];
 }
 
 readonly ref struct SegSlice {
@@ -89,10 +83,10 @@ readonly ref struct SegSlice {
    /// <param name="seg">Sliced seg</param>
    /// <param name="startLie">Slice start lie, along the underlying seg</param>
    /// <param name="endLie">Slice end lie, along the underlying seg</param>
-   public SegSlice (Seg seg, double startLie = 0, double endLie = 1) => (mSeg, mStartLie, mEndLie) = (seg, startLie, endLie);
+   public SegSlice (Seg seg, double startLie = 0, double endLie = 1) => (mSeg, mStartLie, mEndLie) = (seg, (float)startLie, (float)endLie);
 
    readonly Seg mSeg;
-   readonly double mStartLie, mEndLie;
+   readonly float mStartLie, mEndLie;
 
    public bool IsLast => mSeg.IsLast && mEndLie.EQ (1);
    public SegSlice Next () => mEndLie < (1 - Lib.Epsilon) ? new SegSlice (mSeg, mEndLie, 1)
@@ -146,11 +140,13 @@ static class Q {
 
    // Single line segment modified
    public static void TestLineSeg () {
+      Console.WriteLine ("# Line tests");
+
       Poly a = Poly.Parse ("M0,0 H100");
       {
          Poly b = a; // Full overlap!
          Validate (a, b, [new (a[0], 0, 1, b[0], 0, 1)]);
-
+         // Swap'd
          Validate (b, a, [new (b[0], 0, 1, a[0], 0, 1)]);
       }
       {
@@ -174,29 +170,48 @@ static class Q {
          Poly b = Poly.Parse ("M0,0H100"); // Fully contains other
          Validate (a2, b, [new (a[0], 0, 1, b[0], 0.1, 0.9)]);
       }
+
+      Console.WriteLine ("# Arc tests");
+
+      a = Poly.Parse ("M10,0Q0,10,1");
+      {
+         Poly b = a; // Full overlap!
+         Validate (a, b, [new (a[0], 0, 1, b[0], 0, 1)]);
+
+         Validate (b, a, [new (b[0], 0, 1, a[0], 0, 1)]);
+      }
+      {
+         Poly b = Poly.Parse ("M10,0Q-10,0,2"); // Elongated arc
+         Validate (a, b, [new (a[0], 0, 1, b[0], 0, 0.5)]);
+      }
+      {
+         Poly b = Poly.Parse ("M0,-10Q-10,0,3"); // Fully contained
+         Validate (a, b, [new (a[0], 0, 1, b[0], 1.0 / 3, 2.0 / 3)]);
+         // Swap'd
+         Validate (b, a, [new (b[0], 1.0 / 3, 2.0 / 3, a[0], 0, 1)]);
+      }
    }
 
    // Performs regression testing
    public static void Validate (Poly a, Poly b, IList<PairedSpan>? refRanges = null) {
-      var cvrg = Coverage.Compute (a, b);
-      var ranges = cvrg!.Overlaps;
-      if (ranges is null || ranges.Count == 0) {
+      var ovrs = Coverage.Compute (a, b);
+      if (ovrs is null || ovrs.Count == 0) {
          Console.WriteLine ("Fail: No overlaps found");
          return;
       }
       if (refRanges == null) {
-         foreach (var range in ranges)
+         foreach (var range in ovrs)
             Console.WriteLine (range.ToString ());
          return;
       }
-      foreach (var t in Enumerable.Zip (refRanges, ranges)) {
+      foreach (var t in Enumerable.Zip (refRanges, ovrs)) {
          if (!t.First.StartLieA.EQ (t.Second.StartLieA) || !t.First.EndLieA.EQ (t.Second.EndLieA)
             || !t.First.StartLieB.EQ (t.Second.StartLieB) || !t.First.EndLieB.EQ (t.Second.EndLieB)) {
             Console.WriteLine ($"Fail: {t}");
             return;
          }
       }
-      foreach (var range in ranges)
+      foreach (var range in ovrs)
          Console.Write (range);
       Console.WriteLine ($"Pass");
    }
